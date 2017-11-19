@@ -126,20 +126,6 @@ class WaypointUpdater(object):
             else: # Wrap around after the last waypoint.
                 return 0
 
-    def publish_final_waypoints(self):
-
-        while not rospy.is_shutdown():
-            for waypoint in self.final_waypoints: # First, drop the waypoints we passed from the current list.
-                if not is_ahead(waypoint):
-                    # Remove this waypoint from `self.final_waypoints`.
-                else:
-                    # If this waypoint lies ahead of the car, all subsequent waypoints in the list
-                    # will lie ahead of the car, too, and we can stop checking.
-                    break
-            for i in range(LOOKAHEAD_WPS - len(self.final_waypoints)): # Second, fill up the resulting list with new waypoints.
-                # Add waypoints to the list until we have `LOOKAHEAD_WPS` many.
-
-
     def is_ahead(self, index):
         '''
         Returns `True` if the waypoint that `index` references lies ahead of the car and `False` otherwise.
@@ -162,6 +148,12 @@ class WaypointUpdater(object):
             return False
         else:
             return True
+
+    def publish_final_waypoints(self):
+
+        while not rospy.is_shutdown():
+            self.next_waypoint = self.get_next_waypoint()
+            self.final_waypoints_pub.publish(self.waypoints[self.next_waypoint:self.next_waypoint+LOOKAHEAD_WPS])
 
 if __name__ == '__main__':
     try:
