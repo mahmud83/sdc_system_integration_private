@@ -6,6 +6,7 @@ from styx_msgs.msg import Lane, Waypoint
 from tf.transformations import euler_from_quaternion
 
 import math
+import time
 
 '''
 This node will publish waypoints from the car's current position to some `x` distance ahead.
@@ -44,16 +45,27 @@ class WaypointUpdater(object):
         self.waypoints = None
         self.next_waypoint = None
 
+        while (self.waypoints is None) or (self.ego_pose is None):
+            rospy.loginfo("We're still here")
+            time.sleep(0.1)
+
+        while not rospy.is_shutdown():
+            self.next_waypoint = self.get_next_waypoint()
+            final_waypoints = Lane()
+            final_waypoints.waypoints = self.waypoints.waypoints[self.next_waypoint:self.next_waypoint+LOOKAHEAD_WPS]
+            self.final_waypoints_pub.publish(final_waypoints)
+            self.rate.sleep()
+
         rospy.spin()
 
     def pose_cb(self, msg):
         # TODO: Implement
-        self.ego_pose = msg.pose.pose
+        self.ego_pose = msg.pose
 
     def waypoints_cb(self, waypoints):
         # TODO: Implement
-        print "waypoints dtype:", type(waypoints)
-        print "waypoints.waypoints[0] dtype:", type(waypoints.waypoints[0])
+        rospy.loginfo("waypoints dtype: %s", type(waypoints))
+        rospy.loginfo("waypoints.waypoints[0] dtype: %s", type(waypoints.waypoints[0]))
         self.waypoints = waypoints
 
     def traffic_cb(self, msg):
@@ -83,14 +95,17 @@ class WaypointUpdater(object):
         Computes the distance between the ego car and the given waypoint.
         '''
         dl = lambda a, b: math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2  + (a.z-b.z)**2)
-        return dl(self.waypoints.waypoints[wp1].pose.pose.position, self.ego_pose.position)
+        return dl(self.waypoints.waypoints[wp].pose.pose.position, self.ego_pose.position)
 
-    def get_closest_waypoint(self, begin=0, end=len(self.waypoints)):
+    def get_closest_waypoint(self, begin=0, end=None):
         '''
         Returns the waypoint that is closest to the ego car.
         '''
         closest_waypoint = None
-        closest_waypoint_dist = math.inf
+        closest_waypoint_dist = 1000000
+        if end is None:
+            end = len(self.waypoints.waypoints)
+
         if end < begin: # Wrap around after the last waypoint.
             for i in range(begin, len(self.waypoints.waypoints)):
                 dist = self.get_l2_distance(i)
@@ -114,7 +129,7 @@ class WaypointUpdater(object):
         if self.next_waypoint is None: # If this is the first time we're computing the next waypoint, we have to iterate over all waypoints.
             closest_waypoint = self.get_closest_waypoint()
         else:
-            closest_waypoint = self.get_closest_waypoint(begin=self.next_waypoint, end=((self.next_waypoint + 100) % len(self.waypoints)))
+            closest_waypoint = self.get_closest_waypoint(begin=self.next_waypoint, end=((self.next_waypoint + 100) % len(self.waypoints.waypoints)))
         # Check whether the closest waypoint is ahead of the ego car or behind it.
         if self.is_ahead(closest_waypoint):
             # If it is ahead, that's our guy.
