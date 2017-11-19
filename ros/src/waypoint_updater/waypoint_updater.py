@@ -53,7 +53,7 @@ class WaypointUpdater(object):
     def waypoints_cb(self, waypoints):
         # TODO: Implement
         print "waypoints dtype:", type(waypoints)
-        print "waypoints[0] dtype:", type(waypoints[0])
+        print "waypoints.waypoints[0] dtype:", type(waypoints.waypoints[0])
         self.waypoints = waypoints
 
     def traffic_cb(self, msg):
@@ -74,7 +74,7 @@ class WaypointUpdater(object):
         dist = 0
         dl = lambda a, b: math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2  + (a.z-b.z)**2)
         for i in range(wp1, wp2+1):
-            dist += dl(self.waypoints[wp1].pose.pose.position, self.waypoints[i].pose.pose.position)
+            dist += dl(self.waypoints.waypoints[wp1].pose.pose.position, self.waypoints.waypoints[i].pose.pose.position)
             wp1 = i
         return dist
 
@@ -83,7 +83,7 @@ class WaypointUpdater(object):
         Computes the distance between the ego car and the given waypoint.
         '''
         dl = lambda a, b: math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2  + (a.z-b.z)**2)
-        return dl(self.waypoints[wp1].pose.pose.position, self.ego_pose.position)
+        return dl(self.waypoints.waypoints[wp1].pose.pose.position, self.ego_pose.position)
 
     def get_closest_waypoint(self, begin=0, end=len(self.waypoints)):
         '''
@@ -92,7 +92,7 @@ class WaypointUpdater(object):
         closest_waypoint = None
         closest_waypoint_dist = math.inf
         if end < begin: # Wrap around after the last waypoint.
-            for i in range(begin, len(self.waypoints)):
+            for i in range(begin, len(self.waypoints.waypoints)):
                 dist = self.get_l2_distance(i)
                 if dist < closest_waypoint_dist:
                     closest_waypoint = i
@@ -121,7 +121,7 @@ class WaypointUpdater(object):
             return closest_waypoint
         else:
             # If not, then the next waypoint after it must be our guy.
-            if (closest_waypoint + 1) < len(self.waypoints):
+            if (closest_waypoint + 1) < len(self.waypoints.waypoints):
                 return closest_waypoint + 1
             else: # Wrap around after the last waypoint.
                 return 0
@@ -138,8 +138,8 @@ class WaypointUpdater(object):
         # ...and compute the yaw from the quaternion.
         roll, pitch, yaw = euler_from_quaternion(quaternion)
         # Compute the angle of the waypoint relative to the ego car's heading.
-        dx = self.waypoints[index].pose.pose.position.x - self.ego_pose.position.x
-        dy = self.waypoints[index].pose.pose.position.y - self.ego_pose.position.y
+        dx = self.waypoints.waypoints[index].pose.pose.position.x - self.ego_pose.position.x
+        dy = self.waypoints.waypoints[index].pose.pose.position.y - self.ego_pose.position.y
 
         waypoint_angle = math.atan2(dy, dx)
 
@@ -153,7 +153,10 @@ class WaypointUpdater(object):
 
         while not rospy.is_shutdown():
             self.next_waypoint = self.get_next_waypoint()
-            self.final_waypoints_pub.publish(self.waypoints[self.next_waypoint:self.next_waypoint+LOOKAHEAD_WPS])
+            final_waypoints = Lane()
+            final_waypoints.waypoints = self.waypoints.waypoints[self.next_waypoint:self.next_waypoint+LOOKAHEAD_WPS]
+            self.final_waypoints_pub.publish(final_waypoints)
+            self.rate.sleep()
 
 if __name__ == '__main__':
     try:
