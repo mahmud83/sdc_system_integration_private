@@ -34,11 +34,9 @@ class WaypointUpdater(object):
 
         # TODO: Add a subscriber for /traffic_waypoint and /obstacle_waypoint below
 
+        self.final_waypoints_pub = rospy.Publisher('/final_waypoints', Lane, queue_size=1)
 
-        self.final_waypoints_pub = rospy.Publisher('final_waypoints', Lane, queue_size=1)
-
-        # TODO: Add other member variables you need below
-        self.rate = rospy.Rate(10)
+        self.rate = rospy.Rate(50)
 
         self.ego_pose = None
 
@@ -46,9 +44,9 @@ class WaypointUpdater(object):
         self.next_waypoint = None
 
         while (self.waypoints is None) or (self.ego_pose is None):
-            rospy.loginfo("We're still here")
-            time.sleep(0.1)
+            time.sleep(0.05)
 
+        # Publish the final waypoints.
         while not rospy.is_shutdown():
             self.next_waypoint = self.get_next_waypoint()
             final_waypoints = Lane()
@@ -56,14 +54,10 @@ class WaypointUpdater(object):
             self.final_waypoints_pub.publish(final_waypoints)
             self.rate.sleep()
 
-        rospy.spin()
-
     def pose_cb(self, msg):
-        # TODO: Implement
         self.ego_pose = msg.pose
 
     def waypoints_cb(self, waypoints):
-        # TODO: Implement
         rospy.loginfo("waypoints dtype: %s", type(waypoints))
         rospy.loginfo("waypoints.waypoints[0] dtype: %s", type(waypoints.waypoints[0]))
         self.waypoints = waypoints
@@ -164,19 +158,8 @@ class WaypointUpdater(object):
         else:
             return True
 
-    def publish_final_waypoints(self):
-
-        while not rospy.is_shutdown():
-            self.next_waypoint = self.get_next_waypoint()
-            final_waypoints = Lane()
-            final_waypoints.waypoints = self.waypoints.waypoints[self.next_waypoint:self.next_waypoint+LOOKAHEAD_WPS]
-            self.final_waypoints_pub.publish(final_waypoints)
-            self.rate.sleep()
-
 if __name__ == '__main__':
     try:
         waypoint_updater = WaypointUpdater()
-        print "are we ever getting here? yes."
-        waypoint_updater.publish_final_waypoints()
     except rospy.ROSInterruptException:
         rospy.logerr('Could not start waypoint updater node.')
