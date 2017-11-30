@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import rospy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TwistStamped
 from styx_msgs.msg import Lane, Waypoint
 from std_msgs.msg import Int32
 from tf.transformations import euler_from_quaternion
@@ -31,15 +31,12 @@ class WaypointUpdater(object):
     def __init__(self):
         rospy.init_node('waypoint_updater')
 
-        rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
-        rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
-        rospy.Subscriber('/traffic_waypoint', Int32, self.traffic_cb)
-
         self.final_waypoints_pub = rospy.Publisher('/final_waypoints', Lane, queue_size=1)
 
         self.rate = rospy.Rate(50)
 
         self.ego_pose = None
+        self.current_vel = None
 
         self.waypoints = None # This is the list of waypoints (as a `Lane` object) received from the `/base_waypoints` topic. We don't change those.
         self.final_waypoints = None # This is the list of waypoints to publish that we update every cycle.
@@ -47,6 +44,11 @@ class WaypointUpdater(object):
         self.previous_next_waypoint = None
         self.next_stop_line = -1
         self.braking_initiated = False
+
+        rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
+        rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
+        rospy.Subscriber('/traffic_waypoint', Int32, self.traffic_cb)
+        rospy.Subscriber('/current_velocity', TwistStamped, self.current_velocity_cb)
 
         while (self.waypoints is None) or (self.ego_pose is None):
             time.sleep(0.05)
@@ -73,20 +75,27 @@ class WaypointUpdater(object):
                 rospy.loginfo('next_stop_line: %s, next_waypoint: %s, len(self.final_waypoints): %s', self.next_stop_line, self.next_waypoint, len(self.final_waypoints))
                 # Adjust the target velocity of the waypoints leading up to the stop line.
                 current_target_vel = self.get_waypoint_velocity(self.waypoints.waypoints[self.next_waypoint])
-                halt_buffer = 2 # For how many waypoints before the actual stop line the target speed should be set to zero.
+                if (self.current_vel > 0.1) and (current_target_vel < 0.5 * self.current_vel):
+                    # If we are currently a lot slower than the target velocity, then there is no point in speeding up drastically toward the next red light.
+                    current_target_vel = self.current_vel
+                elif self.current_vel <= 0.1:
+                    # If we are currently almost standing still, but we're not yet close enough to the stop line, speed up a little.
+                    current_target_vel = 15 * len(self.final_waypoints) / BRAKE_PATH
+                halt_buffer = 10 # For how many waypoints before the actual stop line the target speed should be set to zero.
                 # Decrement velocity linearly. Not ideal, but let's stick with that for now.
                 brake_path = min(BRAKE_PATH, len(self.final_waypoints))
-                if brake_path < halt_buffer: halt_buffer = 0
-                vel_decrement = current_target_vel / float(brake_path - halt_buffer)
-                start_index = len(self.final_waypoints) - brake_path
-                for i in range(start_index, start_index + brake_path - halt_buffer):
-                    velocity = current_target_vel - (i + 1 - start_index) * vel_decrement
-                    self.set_waypoint_velocity(self.final_waypoints, i, velocity)
-                for i in range(len(self.final_waypoints) - halt_buffer, len(self.final_waypoints)):
-                    velocity = 0.0
-                    self.set_waypoint_velocity(self.final_waypoints, i, velocity)
-                # Publish the waypoints.
-                self.braking_initiated = True
+                if brake_path <= halt_buffer: halt_buffer = 0
+                if brake_path != 0:
+                    vel_decrement = current_target_vel / float(brake_path - halt_buffer)
+                    start_index = len(self.final_waypoints) - brake_path
+                    for i in range(start_index, start_index + brake_path - halt_buffer):
+                        velocity = current_target_vel - (i + 1 - start_index) * vel_decrement
+                        self.set_waypoint_velocity(self.final_waypoints, i, velocity)
+                    for i in range(len(self.final_waypoints) - halt_buffer, len(self.final_waypoints)):
+                        velocity = 0.0
+                        self.set_waypoint_velocity(self.final_waypoints, i, velocity)
+                    # Publish the waypoints.
+                    self.braking_initiated = True
                 final_waypoints = Lane()
                 final_waypoints.waypoints = self.final_waypoints
             elif red_light_in_range and self.braking_initiated: # If we've already started publishing the braking trajectory.
@@ -105,7 +114,7 @@ class WaypointUpdater(object):
                     final_waypoints.waypoints += self.waypoints.waypoints[self.next_waypoint:len(self.waypoints.waypoints)]
                     num_waypoints_left_to_add = LOOKAHEAD_WPS - (len(self.waypoints.waypoints) - self.next_waypoint)
                     final_waypoints.waypoints += self.waypoints.waypoints[0:num_waypoints_left_to_add]
-                rospy.loginfo('next_stop_line: %s, next_waypoint: %s, len(self.final_waypoints): %s', self.next_stop_line, self.next_waypoint, len(final_waypoints.waypoints))
+                rospy.loginfo('next_stop_line: %s, next_waypoint: %s, len(self.final_waypoints): %s tv: %s', self.next_stop_line, self.next_waypoint, len(final_waypoints.waypoints), self.waypoints.waypoints[0].twist.twist.linear.x)
 
             self.previous_next_waypoint = self.next_waypoint
             self.final_waypoints_pub.publish(final_waypoints)
@@ -123,6 +132,9 @@ class WaypointUpdater(object):
     def obstacle_cb(self, msg):
         # TODO: Callback for /obstacle_waypoint message. We will implement it later
         pass
+
+    def current_velocity_cb(self, msg):
+        self.current_vel = msg.twist.linear.x
 
     def get_waypoint_velocity(self, waypoint):
         return waypoint.twist.twist.linear.x
