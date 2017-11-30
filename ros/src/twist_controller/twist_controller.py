@@ -8,6 +8,8 @@ from lowpass import LowPassFilter
 GAS_DENSITY = 2.858
 ONE_MPH = 0.44704
 
+TEST_BRAKING_CONST = 16 # Remove this later.
+
 class Controller(object):
 
     def __init__(self,
@@ -21,7 +23,7 @@ class Controller(object):
                  steer_ratio,
                  max_lat_accel,
                  max_steer_angle,
-                 min_speed=0.1):
+                 min_speed=0.0):
         # PID controller for throttle and braking
         self.tb_pid = PID(kp=0.4, ki=0.01, kd=0.01, mn=-1.0, mx=accel_limit)
         # Low pass filter to smooth out throttle/braking actuations.
@@ -63,11 +65,10 @@ class Controller(object):
             tb = self.tb_pid.step(error=(current_linear_velocity - target_linear_velocity), sample_time=sample_time)
             # Smoothen it.
             tb = self.tb_lpf.filt(tb)
-            rospy.loginfo("throttle/braking PID value: %s, target_linear_velocity: %s, current_linear_velocity: %s", tb, target_linear_velocity, current_linear_velocity)
             # Scale it.
             if tb < -self.brake_deadband: # We're braking.
                 # Convert the raw braking value to torque in Nm (Newton-meters).
-                brake = self.braking_constant * tb
+                brake = self.braking_constant * tb * TEST_BRAKING_CONST
                 throttle = 0
             elif tb < 0: # We want to slow down, but don't need to brake actively in order to do so.
                 brake = 0
@@ -80,6 +81,7 @@ class Controller(object):
                                                      angular_velocity=target_angular_velocity,
                                                      current_velocity=current_linear_velocity)
 
+            rospy.loginfo("tb PID: %s, brake: %s, steer: %s, tv: %s, cv: %s", tb, brake, steer, target_linear_velocity, current_linear_velocity)
             return throttle, brake, steer
 
         else: # If `dbw_enabled` is False.
