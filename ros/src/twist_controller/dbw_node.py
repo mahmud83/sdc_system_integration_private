@@ -68,7 +68,7 @@ class DBWNode(object):
                                      steer_ratio=steer_ratio,
                                      max_lat_accel=max_lat_accel,
                                      max_steer_angle=max_steer_angle,
-                                     min_speed=0.1)
+                                     min_speed=0.0)
 
         # Subscribe to the relevant topics.
         rospy.Subscriber('/twist_cmd', TwistStamped, self.twist_cb)
