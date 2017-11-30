@@ -255,7 +255,7 @@ class TLDetector(object):
         car_z = self.ego_pose.position.z
         car_pos = (car_x, car_y, car_z)
         if not (self.closest_waypoint is None):
-            self.closest_waypoint = self.get_closest_waypoint(point=car_pos, begin=self.closest_waypoint, end=((self.next_waypoint + 100) % len(self.waypoints.waypoints)))
+            self.closest_waypoint = self.get_closest_waypoint(point=car_pos, begin=self.closest_waypoint, end=((self.closest_waypoint + 100) % len(self.waypoints.waypoints)))
         else:
             self.closest_waypoint = self.get_closest_waypoint(point=car_pos)
         # Check there is a stop line within a specified horizon of the ego car's currently closest waypoint.
