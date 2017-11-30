@@ -3,6 +3,7 @@
 import rospy
 from geometry_msgs.msg import PoseStamped
 from styx_msgs.msg import Lane, Waypoint
+from std_msgs.msg import Int32
 from tf.transformations import euler_from_quaternion
 
 import math
@@ -23,7 +24,8 @@ as well as to verify your TL classifier.
 TODO (for Yousuf and Aaron): Stopline location for each traffic light.
 '''
 
-LOOKAHEAD_WPS = 200 # Number of waypoints we will publish. You can change this number
+LOOKAHEAD_WPS = 200 # The number of waypoints that will be published in each cycle.
+BRAKE_PATH = 100 # How many waypoints ahead of a red light to start braking.
 
 class WaypointUpdater(object):
     def __init__(self):
@@ -31,8 +33,7 @@ class WaypointUpdater(object):
 
         rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
         rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
-
-        # TODO: Add a subscriber for /traffic_waypoint and /obstacle_waypoint below
+        rospy.Subscriber('/traffic_waypoint', Int32, self.traffic_cb)
 
         self.final_waypoints_pub = rospy.Publisher('/final_waypoints', Lane, queue_size=1)
 
@@ -40,17 +41,73 @@ class WaypointUpdater(object):
 
         self.ego_pose = None
 
-        self.waypoints = None
+        self.waypoints = None # This is the list of waypoints (as a `Lane` object) received from the `/base_waypoints` topic. We don't change those.
+        self.final_waypoints = None # This is the list of waypoints to publish that we update every cycle.
         self.next_waypoint = None
+        self.previous_next_waypoint = None
+        self.next_stop_line = -1
+        self.braking_initiated = False
 
         while (self.waypoints is None) or (self.ego_pose is None):
             time.sleep(0.05)
 
         # Publish the final waypoints.
         while not rospy.is_shutdown():
+            # 1: Create the basic list of the next `LOOKAHEAD_WPS`-many waypoints.
             self.next_waypoint = self.get_next_waypoint()
-            final_waypoints = Lane()
-            final_waypoints.waypoints = self.waypoints.waypoints[self.next_waypoint:self.next_waypoint+LOOKAHEAD_WPS]
+
+            red_light_in_range = self.next_stop_line > 0
+            if self.next_stop_line >= self.next_waypoint:
+                red_light_in_range = red_light_in_range and (self.next_stop_line - self.next_waypoint) <= LOOKAHEAD_WPS
+            else:
+                red_light_distance = len(self.waypoints.waypoints) - self.next_waypoint + self.next_stop_line
+                red_light_in_range = red_light_in_range and red_light_distance <= LOOKAHEAD_WPS
+
+            if red_light_in_range and (not self.braking_initiated): # If we need to stop at a red light and realize that for the first time, i.e. if we don't have a braking trajectory yet.
+                # Extract the relevant waypoints.
+                if self.next_stop_line >= self.next_waypoint:
+                    self.final_waypoints = self.waypoints.waypoints[self.next_waypoint:self.next_stop_line]
+                else:
+                    self.final_waypoints = self.waypoints.waypoints[self.next_waypoint:]
+                    self.final_waypoints += self.waypoints.waypoints[0:self.next_stop_line]
+                rospy.loginfo('next_stop_line: %s, next_waypoint: %s, len(self.final_waypoints): %s', self.next_stop_line, self.next_waypoint, len(self.final_waypoints))
+                # Adjust the target velocity of the waypoints leading up to the stop line.
+                current_target_vel = self.get_waypoint_velocity(self.waypoints.waypoints[self.next_waypoint])
+                halt_buffer = 2 # For how many waypoints before the actual stop line the target speed should be set to zero.
+                # Decrement velocity linearly. Not ideal, but let's stick with that for now.
+                brake_path = min(BRAKE_PATH, len(self.final_waypoints))
+                if brake_path < halt_buffer: halt_buffer = 0
+                vel_decrement = current_target_vel / float(brake_path - halt_buffer)
+                start_index = len(self.final_waypoints) - brake_path
+                for i in range(start_index, start_index + brake_path - halt_buffer):
+                    velocity = current_target_vel - (i + 1 - start_index) * vel_decrement
+                    self.set_waypoint_velocity(self.final_waypoints, i, velocity)
+                for i in range(len(self.final_waypoints) - halt_buffer, len(self.final_waypoints)):
+                    velocity = 0.0
+                    self.set_waypoint_velocity(self.final_waypoints, i, velocity)
+                # Publish the waypoints.
+                self.braking_initiated = True
+                final_waypoints = Lane()
+                final_waypoints.waypoints = self.final_waypoints
+            elif red_light_in_range and self.braking_initiated: # If we've already started publishing the braking trajectory.
+                # We already have a braking trajectory, just publish the part of it that still lies ahead of the car.
+                num_waypoints_passed = self.next_waypoint - self.previous_next_waypoint
+                self.final_waypoints = self.final_waypoints[num_waypoints_passed:]
+                rospy.loginfo('next_stop_line: %s, next_waypoint: %s, len(self.final_waypoints): %s', self.next_stop_line, self.next_waypoint, len(self.final_waypoints))
+                final_waypoints = Lane()
+                final_waypoints.waypoints = self.final_waypoints
+            else: # If self.next_stop_line == -1, there either is no traffic light or if there is one, then it is not red (anymore).
+                self.braking_initiated = False
+                final_waypoints = Lane()
+                if self.next_waypoint + LOOKAHEAD_WPS <= len(self.waypoints.waypoints):
+                    final_waypoints.waypoints = self.waypoints.waypoints[self.next_waypoint:self.next_waypoint+LOOKAHEAD_WPS]
+                else: # Wrap around at the end of the track.
+                    final_waypoints.waypoints += self.waypoints.waypoints[self.next_waypoint:len(self.waypoints.waypoints)]
+                    num_waypoints_left_to_add = LOOKAHEAD_WPS - (len(self.waypoints.waypoints) - self.next_waypoint)
+                    final_waypoints.waypoints += self.waypoints.waypoints[0:num_waypoints_left_to_add]
+                rospy.loginfo('next_stop_line: %s, next_waypoint: %s, len(self.final_waypoints): %s', self.next_stop_line, self.next_waypoint, len(final_waypoints.waypoints))
+
+            self.previous_next_waypoint = self.next_waypoint
             self.final_waypoints_pub.publish(final_waypoints)
             self.rate.sleep()
 
@@ -61,8 +118,7 @@ class WaypointUpdater(object):
         self.waypoints = waypoints
 
     def traffic_cb(self, msg):
-        # TODO: Callback for /traffic_waypoint message. Implement
-        pass
+        self.next_stop_line = msg.data
 
     def obstacle_cb(self, msg):
         # TODO: Callback for /obstacle_waypoint message. We will implement it later
