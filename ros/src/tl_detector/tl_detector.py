@@ -14,6 +14,11 @@ import time
 import math
 
 STATE_COUNT_THRESHOLD = 3
+# If the next variable is True, the imported TLClassifier object won't be used.
+# Instead, the ground truth traffic light information from the `/vehicle/traffic_lights` topic will be used,
+# i.e. the car will have perfect knowledge of each upcoming light and its state.
+# This is useful for debugging other features.
+PERFECT_TL_DETECTION = True
 
 class TLDetector(object):
     def __init__(self):
@@ -31,7 +36,7 @@ class TLDetector(object):
         self.stop_line_waypoints = None # List containing the index of the closest waypoint for each traffic light stop line on the map.
 
         sub1 = rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
-        sub2 = rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
+        self.sub2 = rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
 
         # Unless we know the waypoints and where we are located, there is no point in starting.
         while (self.waypoints is None) or (self.ego_pose is None):
@@ -47,7 +52,8 @@ class TLDetector(object):
         # Get the closest waypoints to all traffic light stop lines.
         self.get_stop_line_waypoints()
 
-        sub3 = rospy.Subscriber('/vehicle/traffic_lights', TrafficLightArray, self.traffic_cb)
+        if PERFECT_TL_DETECTION:
+            sub3 = rospy.Subscriber('/vehicle/traffic_lights', TrafficLightArray, self.traffic_cb)
         sub6 = rospy.Subscriber('/image_color', Image, self.image_cb)
 
         self.upcoming_red_light_pub = rospy.Publisher('/traffic_waypoint', Int32, queue_size=1)
@@ -68,6 +74,7 @@ class TLDetector(object):
 
     def waypoints_cb(self, waypoints):
         self.waypoints = waypoints
+        self.sub2.unregister() # The waypoints are being published only once, so we will no longer need to subscribe to this node afterwards.
 
     def traffic_cb(self, msg):
         self.lights = msg.lights
@@ -84,12 +91,10 @@ class TLDetector(object):
         self.camera_image = msg
         light_wp, state = self.process_traffic_lights()
 
-        '''
-        Publish upcoming red lights at camera frequency.
-        Each predicted state has to occur `STATE_COUNT_THRESHOLD` number
-        of times till we start using it. Otherwise the previous stable state is
-        used.
-        '''
+        # Publish upcoming red lights at camera frequency.
+        # Each predicted state has to occur `STATE_COUNT_THRESHOLD` number
+        # of times till we start using it. Otherwise the previous stable state is
+        # used.
         if self.state != state:
             self.state_count = 0
             self.state = state
@@ -192,46 +197,29 @@ class TLDetector(object):
         for stop_line in self.stop_line_positions:
             self.stop_line_waypoints.append(self.get_closest_waypoint(stop_line))
 
-    def get_next_stop_line(self, horizon=100):
-        '''
-        Finds the traffic light stop line, if any, that is closest ahead of the ego car's current position.
+        self.stop_line_waypoints.sort()
 
-        Arguments:
-            horizon (int, optional): The look-ahead distance in number of waypoints. Only stop lines within
-                this horizon will be considered.
+    def get_next_stop_line(self):
+        '''
+        Finds the next traffic light stop line ahead of the ego car's current position.
 
         Return:
-            The index of the next stop line ahead of the ego car's current position or `None`
-            if no stop line lies within the horizon.
+            The index of the waypoint that is closest to the next upcoming stop line
+            or `None` if there are no stop lines in `stop_line_waypoints`.
         '''
-        begin = self.closest_waypoint
-        end = (self.closest_waypoint + horizon) % len(self.waypoints.waypoints)
-
-        next_stop_line = None
-        next_stop_line_dist = horizon + 1
-
-        if begin < end:
-            for i in range(len(self.stop_line_positions)):
-                stop_line_waypoint = self.stop_line_waypoints[i]
-                stop_line_dist = stop_line_waypoint - self.closest_waypoint
-                if (stop_line_waypoint in range(begin, end)) and (stop_line_dist < next_stop_line_dist):
-                    next_stop_line = i
-                    next_stop_line_dist = stop_line_dist
+        if len(self.stop_line_waypoints) == 0:
+            return None
+        elif len(self.stop_line_waypoints) == 1:
+            return self.stop_line_waypoints[0]
         else:
-            for i in range(len(self.stop_line_positions)):
-                stop_line_waypoint = self.stop_line_waypoints[i]
-                if stop_line_waypoint in range(begin, len(self.waypoints.waypoints)):
-                    stop_line_dist = stop_line_waypoint - self.closest_waypoint
-                    if stop_line_dist < next_stop_line_dist:
-                        next_stop_line = i
-                        next_stop_line_dist = stop_line_dist
-                elif stop_line_waypoint in range(0, end):
-                    stop_line_dist = len(self.waypoints.waypoints) - self.closest_waypoint + stop_line_waypoint
-                    if stop_line_dist < next_stop_line_dist:
-                        next_stop_line = i
-                        next_stop_line_dist = stop_line_dist
-
-        return next_stop_line
+            # The following procedure works because the stop_line_waypoints list is sorted.
+            for i in range(len(self.stop_line_waypoints)):
+                if self.closest_waypoint < self.stop_line_waypoints[i]:
+                    return self.stop_line_waypoints[i]
+            # If we haven't returned at this point, then we're at the end of the
+            # track loop (i.e. we've already passed the last stop line on the track),
+            # which means the first stop line is the next stop line.
+            return self.stop_line_waypoints[0]
 
     def get_light_state(self):
         """Determines the current color of the traffic light
@@ -246,7 +234,6 @@ class TLDetector(object):
         if not self.has_image:
             self.prev_light_loc = None
             return False
-
 
         cv_image = self.bridge.imgmsg_to_cv2(self.camera_image, "bgr8")
 
@@ -268,17 +255,26 @@ class TLDetector(object):
         car_z = self.ego_pose.position.z
         car_pos = (car_x, car_y, car_z)
         if not (self.closest_waypoint is None):
-            self.closest_waypoint = self.get_closest_waypoint(point=car_pos, begin=self.closest_waypoint, end=(self.closest_waypoint + 100))
+            self.closest_waypoint = self.get_closest_waypoint(point=car_pos, begin=self.closest_waypoint, end=((self.next_waypoint + 100) % len(self.waypoints.waypoints)))
         else:
             self.closest_waypoint = self.get_closest_waypoint(point=car_pos)
         # Check there is a stop line within a specified horizon of the ego car's currently closest waypoint.
-        next_stop_line = self.get_next_stop_line(horizon=100)
+        next_stop_line = self.get_next_stop_line()
 
-        if next_stop_line is None: # If there is no stop line within the specified horizon
+        if next_stop_line is None: # If there are no traffic lights.
             return -1, TrafficLight.UNKNOWN
-        else: # If there is a stop line within the specified horizon, check what color the light is.
+        elif PERFECT_TL_DETECTION:
+            state = self.lights[self.stop_line_waypoints.index(next_stop_line)].state
+            if state == TrafficLight.RED:
+                return next_stop_line, state
+            else:
+                return -1, state
+        else: # Check what color the next upcoming traffic light is.
             state = self.get_light_state()
-            return next_stop_line, state
+            if state == TrafficLight.RED:
+                return next_stop_line, state
+            else:
+                return -1, state
 
 if __name__ == '__main__':
     try:
